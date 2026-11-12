@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use agent_tripwire::hook::{self, Agent};
+use agent_tripwire::listen;
 use agent_tripwire::plant::{self, PlantOutcome, PlantRequest, Profile};
 use agent_tripwire::scan;
 use agent_tripwire::state::{Kind, Registry, State, real_home};
@@ -83,6 +84,11 @@ enum Cmd {
         /// Poll interval in milliseconds.
         #[arg(long, default_value_t = 500, value_name = "MS")]
         interval: u64,
+    },
+    /// Run the local listener that detects planted credentials being used.
+    Listen {
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
     },
     /// Show the alert log.
     Alerts {
@@ -167,6 +173,19 @@ fn run(command: Cmd) -> Result<ExitCode> {
             notify,
             interval,
         } => watch(transcripts, notify, interval),
+        Cmd::Listen { port } => {
+            let state = State::locate()?;
+            let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+                .with_context(|| format!("binding 127.0.0.1:{port}"))?;
+            eprintln!("Listening on http://127.0.0.1:{port}. Ctrl-C to stop.");
+            listen::serve(listener, &state, |alert| {
+                if let Err(e) = state.append_alert(alert) {
+                    eprintln!("tripwire listen: {e:#}");
+                }
+                println!("{}", alert.summary());
+            })?;
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Alerts { json, since } => alerts(json, since),
     }
 }
