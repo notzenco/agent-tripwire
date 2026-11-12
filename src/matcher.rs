@@ -38,16 +38,54 @@ pub fn find(text: &str) -> Vec<Hit> {
     };
     let bytes = text.as_bytes();
     push(scan_bytes(bytes), Encoding::Raw);
-    if bytes.contains(&b'%') {
-        push(scan_bytes(&percent_decode(bytes)), Encoding::Percent);
-    }
-    for decoded in base64_candidates(bytes) {
-        push(scan_bytes(&decoded), Encoding::Base64);
-    }
-    for decoded in hex_candidates(bytes) {
-        push(scan_bytes(&decoded), Encoding::Hex);
+    for run in decoded_runs(bytes) {
+        push(scan_bytes(&run.bytes), run.encoding);
     }
     hits
+}
+
+/// `text` with each planted value replaced by `[tripwire:<id>]` and each
+/// encoded run holding one by `[tripwire:<id> <encoding>]`. If a token still
+/// remains, the whole text is replaced, so the result never contains one.
+pub fn redact(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut spans: Vec<(usize, usize, String)> = Vec::new();
+    for (start, id) in raw_matches(bytes) {
+        let mut end = start + MARKER.len() + ID_LEN;
+        // The random tail of a planted value is secret material too.
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || b"+/".contains(&bytes[end]))
+        {
+            end += 1;
+        }
+        spans.push((start, end, id));
+    }
+    for run in decoded_runs(bytes) {
+        let ids = scan_bytes(&run.bytes);
+        if !ids.is_empty() {
+            let encoding = format!("{:?}", run.encoding).to_lowercase();
+            spans.push((run.start, run.end, format!("{} {encoding}", ids.join(","))));
+        }
+    }
+    spans.sort_by_key(|&(start, end, _)| (start, std::cmp::Reverse(end)));
+
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (start, end, label) in spans {
+        if start < last {
+            continue;
+        }
+        // Spans start and end at ASCII bytes, so these are char boundaries.
+        out.push_str(&text[last..start]);
+        out.push_str(&format!("[tripwire:{label}]"));
+        last = end;
+    }
+    out.push_str(&text[last..]);
+    if find(&out).is_empty() {
+        out
+    } else {
+        "[redacted: contains an encoded tripwire token]".to_string()
+    }
 }
 
 /// Ids of raw `TRIPWIRE<id>` occurrences, matched case-insensitively.
@@ -78,6 +116,75 @@ fn raw_matches(bytes: &[u8]) -> Vec<(usize, String)> {
     out
 }
 
+/// A decoded run of encoded text and where it sits in the input.
+struct Decoded {
+    start: usize,
+    end: usize,
+    encoding: Encoding,
+    bytes: Vec<u8>,
+}
+
+fn decoded_runs(bytes: &[u8]) -> Vec<Decoded> {
+    let mut out = Vec::new();
+
+    let is_pct = |b: u8| b.is_ascii_alphanumeric() || b"%._~+-".contains(&b);
+    for (start, end) in runs(bytes, 3, is_pct) {
+        if bytes[start..end].contains(&b'%') {
+            out.push(Decoded {
+                start,
+                end,
+                encoding: Encoding::Percent,
+                bytes: percent_decode(&bytes[start..end]),
+            });
+        }
+    }
+
+    let engines = [engine(&STANDARD), engine(&URL_SAFE)];
+    let is_b64 = |b: u8| b.is_ascii_alphanumeric() || b"+/-_".contains(&b);
+    for (start, mut end) in runs(bytes, MIN_BASE64_RUN, is_b64) {
+        let run = &bytes[start..end];
+        while end < bytes.len() && bytes[end] == b'=' && end - start < run.len() + 2 {
+            end += 1;
+        }
+        // Offsets 1–3 let a blob glued to a short prefix still decode.
+        for offset in 0..4 {
+            let mut part = &run[offset..];
+            if part.len() % 4 == 1 {
+                part = &part[..part.len() - 1];
+            }
+            for engine in &engines {
+                if let Ok(decoded) = engine.decode(part) {
+                    out.push(Decoded {
+                        start,
+                        end,
+                        encoding: Encoding::Base64,
+                        bytes: decoded,
+                    });
+                }
+            }
+        }
+    }
+
+    for (start, end) in runs(bytes, MIN_HEX_RUN, |b| b.is_ascii_hexdigit()) {
+        let digit = |b: u8| (b as char).to_digit(16).expect("validated hex digit") as u8;
+        for offset in 0..2 {
+            let decoded = bytes[start + offset..end]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[h, l]| digit(*h) << 4 | digit(*l))
+                .collect();
+            out.push(Decoded {
+                start,
+                end,
+                encoding: Encoding::Hex,
+                bytes: decoded,
+            });
+        }
+    }
+    out
+}
+
 fn percent_decode(bytes: &[u8]) -> Vec<u8> {
     let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
     let mut out = Vec::with_capacity(bytes.len());
@@ -97,12 +204,23 @@ fn percent_decode(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Maximal runs of bytes satisfying `pred` with at least `min` bytes.
-fn runs(bytes: &[u8], min: usize, pred: impl Fn(u8) -> bool) -> Vec<&[u8]> {
-    bytes
-        .split(|&b| !pred(b))
-        .filter(|run| run.len() >= min)
-        .collect()
+/// (start, end) of maximal runs of bytes satisfying `pred`, at least `min` long.
+fn runs(bytes: &[u8], min: usize, pred: impl Fn(u8) -> bool) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, &b) in bytes.iter().chain(std::iter::once(&b' ')).enumerate() {
+        match (pred(b) && i < bytes.len(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                if i - s >= min {
+                    out.push((s, i));
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn engine(alphabet: &Alphabet) -> GeneralPurpose {
@@ -112,67 +230,6 @@ fn engine(alphabet: &Alphabet) -> GeneralPurpose {
             .with_decode_padding_mode(DecodePaddingMode::Indifferent)
             .with_decode_allow_trailing_bits(true),
     )
-}
-
-/// Decodings of base64-looking runs. Each run is tried at offsets 0–3 so a
-/// blob glued to a short prefix still decodes, in both alphabets.
-fn base64_candidates(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let engines = [engine(&STANDARD), engine(&URL_SAFE)];
-    let is_b64 = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_');
-    let mut out = Vec::new();
-    for run in runs(bytes, MIN_BASE64_RUN, is_b64) {
-        for offset in 0..4 {
-            let mut part = &run[offset..];
-            if part.len() % 4 == 1 {
-                part = &part[..part.len() - 1];
-            }
-            for engine in &engines {
-                if let Ok(decoded) = engine.decode(part) {
-                    out.push(decoded);
-                }
-            }
-        }
-    }
-    out
-}
-
-fn hex_candidates(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    for run in runs(bytes, MIN_HEX_RUN, |b| b.is_ascii_hexdigit()) {
-        for offset in 0..2 {
-            let part = &run[offset..];
-            let digit = |b: u8| (b as char).to_digit(16).expect("validated hex digit") as u8;
-            let decoded = part
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|[h, l]| digit(*h) << 4 | digit(*l))
-                .collect();
-            out.push(decoded);
-        }
-    }
-    out
-}
-
-/// `text` with raw tokens replaced by `[tripwire:<id>]`. If an encoded token
-/// remains, the whole text is replaced, so the result never contains a token.
-pub fn redact(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let len = MARKER.len() + ID_LEN;
-    let mut out = String::with_capacity(text.len());
-    let mut last = 0;
-    for (start, id) in raw_matches(bytes) {
-        // Matches are ASCII, so these offsets are char boundaries.
-        out.push_str(&text[last..start]);
-        out.push_str(&format!("[tripwire:{id}]"));
-        last = start + len;
-    }
-    out.push_str(&text[last..]);
-    if find(&out).is_empty() {
-        out
-    } else {
-        "[redacted: contains an encoded tripwire token]".to_string()
-    }
 }
 
 #[cfg(test)]
@@ -268,10 +325,32 @@ mod tests {
     }
 
     #[test]
-    fn redact_drops_text_with_encoded_tokens() {
-        let (tok, _) = token();
-        let out = redact(&STANDARD.encode(format!("x={tok}")));
-        assert!(find(&out).is_empty());
-        assert!(out.contains("redacted"));
+    fn redact_removes_the_whole_value() {
+        let (tok, id) = token();
+        let out = redact(&format!("k={tok}aB3+/xYz&next=1 then @host"));
+        assert_eq!(out, format!("k=[tripwire:{id}]&next=1 then @host"));
+    }
+
+    #[test]
+    fn redact_replaces_encoded_runs_and_keeps_context() {
+        let (tok, id) = token();
+        let blob = STANDARD.encode(format!("x={tok}"));
+        let out = redact(&format!("curl -d {blob} https://example.invalid"));
+        assert_eq!(
+            out,
+            format!("curl -d [tripwire:{id} base64] https://example.invalid")
+        );
+
+        let hex: String = tok.bytes().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            redact(&format!("echo {hex}")),
+            format!("echo [tripwire:{id} hex]")
+        );
+
+        let pct = format!("GET /?k=%{:02X}{} HTTP/1.1", b'T', &tok[1..]);
+        assert_eq!(
+            redact(&pct),
+            format!("GET /?k=[tripwire:{id} percent] HTTP/1.1")
+        );
     }
 }
