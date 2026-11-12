@@ -233,7 +233,8 @@ and looks the id up in the registry. It searches:
 - gzip data inside a base64 or hex run (`gzip | base64`), decompressed up
   to 1 MiB to bound decompression bombs.
 
-Apart from gzip inside base64 or hex, decoding goes one level deep. Hits with valid check characters but an unknown
+Apart from gzip inside base64 or hex, decoding goes one level deep. Hits
+with valid check characters but an unknown
 id are reported as `unregistered` at low severity (for example a token from a
 removed plant).
 
@@ -282,6 +283,9 @@ prints alerts to stderr, `watch` and `listen` print them to stdout, and
 
 Kinds, in decreasing severity: `exfil`, `use`, `read`, `read-attempt`,
 `modified`, `deleted`, `disclosed`, `mention`, `unregistered`.
+
+Token alerts carry an `encoding`: `raw`, `percent`, `base64`, `hex`, `gzip`
+(gzip inside base64 or hex) or `partial` (a value's tail without its marker).
 
 ## State
 

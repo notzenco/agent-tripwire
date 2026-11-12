@@ -196,6 +196,10 @@ its own there (npm writes `~/.npm/_logs`, for instance), and says so.
 | `mention` | A token appeared anywhere else, such as a user prompt |
 | `unregistered` | A well-formed token whose id is not in the registry, such as one from a removed plant |
 
+Token alerts also record how the value appeared: `raw`, `percent`, `base64`,
+`hex`, `gzip` (gzip inside base64 or hex) or `partial` (the random part of a
+value without its `TRIPWIRE…` prefix).
+
 Alerts are appended to `alerts.jsonl` in the state directory:
 `$TRIPWIRE_STATE_DIR`, else `$XDG_STATE_HOME/agent-tripwire`, else
 `~/.local/state/agent-tripwire`.
@@ -228,9 +232,10 @@ decisions.
 - Read detection on macOS needs access times to be updated, which APFS does by
   default. On a `noatime` mount, `watch` only sees modification and deletion.
 - Content matching catches common encodings one level deep, plus gzip
-  inside base64 or hex. An agent that
-  deliberately transforms tokens (encryption, splitting, character-by-character
-  copying) can evade it. Read detection still fires.
+  inside base64 or hex. A leak of only a value's random part is caught when
+  at least 16 characters of it appear unencoded. An agent that deliberately
+  transforms tokens (encryption, splitting, character-by-character copying)
+  can evade it. Read detection still fires.
 - agent-tripwire detects; it does not protect real credentials. Run agents
   with a sandbox `HOME` so there are none to find.
 
