@@ -2,5 +2,6 @@
 //! reads, sends out or uses them. See `docs/design.md`.
 
 pub mod matcher;
+pub mod plant;
 pub mod state;
 pub mod token;
