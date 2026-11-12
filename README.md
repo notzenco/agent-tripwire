@@ -144,7 +144,10 @@ For a project-level test, `tripwire plant <project-dir>` plants a `.env`
 instead. `--profile home` or `--kind aws --kind ssh` choose other sets.
 
 **b. Install the hook.** `tripwire hook config claude` (or `codex`) prints a
-snippet to merge into `~/.claude/settings.json` (or `~/.codex/hooks.json`). It
+snippet to merge into `~/.claude/settings.json` (or `~/.codex/hooks.json`).
+For a one-off Claude Code run, save it to a file and pass
+`claude --settings <file>` instead. Codex does not run a new hook until you
+enable it in its `/hooks` browser. The hook
 runs `tripwire hook` on every `PreToolUse` and `PostToolUse` event. Hooks only
 observe by default; add `--block` to the command to deny tool calls that would
 send a token out. Claude Code does not show a hook's output when it exits
