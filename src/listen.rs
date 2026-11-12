@@ -51,7 +51,7 @@ pub fn handle(stream: &mut (impl Read + Write), registry: &Registry, peer: &str)
     // (id, encoding) -> where it was seen
     let mut seen: Vec<(matcher::Hit, Vec<String>)> = Vec::new();
     for (label, text) in &parts {
-        for hit in matcher::find(text) {
+        for hit in registry.find(text) {
             match seen.iter_mut().find(|(h, _)| *h == hit) {
                 Some((_, labels)) => labels.push(label.clone()),
                 None => seen.push((hit, vec![label.clone()])),
@@ -64,7 +64,7 @@ pub fn handle(stream: &mut (impl Read + Write), registry: &Registry, peer: &str)
                 Alert::new(AlertKind::Use, "listen").with_token(registry, &hit.id, hit.encoding);
             alert.detail = Some(format!(
                 "{} from {peer}; token in {}",
-                matcher::redact(&request_line),
+                registry.redact(&request_line),
                 labels.join(", ")
             ));
             alert
@@ -137,24 +137,23 @@ mod tests {
 
     fn registry() -> (Registry, String) {
         let id = new_id(|_| false);
-        let reg = Registry {
-            plants: vec![Plant {
-                id: "p-test".into(),
-                created: String::new(),
-                root: "/sb".into(),
-                files: vec![PlantedFile {
-                    path: "/sb/.aws/credentials".into(),
-                    kind: Kind::Aws,
-                    sha256: String::new(),
-                    tokens: vec![TokenField {
-                        id: id.clone(),
-                        field: "aws_access_key_id".into(),
-                    }],
+        let reg = Registry::new(vec![Plant {
+            id: "p-test".into(),
+            created: String::new(),
+            root: "/sb".into(),
+            files: vec![PlantedFile {
+                path: "/sb/.aws/credentials".into(),
+                kind: Kind::Aws,
+                sha256: String::new(),
+                tokens: vec![TokenField {
+                    id: id.clone(),
+                    field: "aws_access_key_id".into(),
+                    tail_hashes: vec![],
                 }],
-                created_dirs: vec![],
-                listen: Some(1),
             }],
-        };
+            created_dirs: vec![],
+            listen: Some(1),
+        }]);
         (reg, id)
     }
 

@@ -13,7 +13,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::matcher::Encoding;
+use std::sync::OnceLock;
+
+use crate::matcher::{self, Encoding, Hit};
+use crate::partial::TailIndex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +34,9 @@ pub enum Kind {
 pub struct TokenField {
     pub id: String,
     pub field: String,
+    /// Window hashes of the value's random tail; see `partial`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,10 +58,20 @@ pub struct Plant {
     pub listen: Option<u16>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Registry {
     pub plants: Vec<Plant>,
+    #[serde(skip)]
+    tails: OnceLock<TailIndex>,
 }
+
+impl PartialEq for Registry {
+    fn eq(&self, other: &Registry) -> bool {
+        self.plants == other.plants
+    }
+}
+
+impl Eq for Registry {}
 
 /// Where a registered token lives.
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +82,55 @@ pub struct Location<'a> {
 }
 
 impl Registry {
+    pub fn new(plants: Vec<Plant>) -> Registry {
+        Registry {
+            plants,
+            tails: OnceLock::new(),
+        }
+    }
+
+    /// Like [`matcher::find`], plus tails of registered values leaked
+    /// without their marker (reported with [`Encoding::Partial`]).
+    pub fn find(&self, text: &str) -> Vec<Hit> {
+        let mut hits = matcher::find(text);
+        for (_, _, id) in self.tail_index().find(text) {
+            // A full raw value also contains its tail; report it once.
+            if !hits.iter().any(|h| h.id == id) {
+                hits.push(Hit {
+                    id,
+                    encoding: Encoding::Partial,
+                });
+            }
+        }
+        hits
+    }
+
+    /// Like [`matcher::redact`], also replacing leaked tails with
+    /// `[tripwire:<id> partial]`.
+    pub fn redact(&self, text: &str) -> String {
+        let redacted = matcher::redact(text);
+        let mut out = String::with_capacity(redacted.len());
+        let mut last = 0;
+        for (start, end, id) in self.tail_index().find(&redacted) {
+            // Tail spans are ASCII, so these are char boundaries.
+            out.push_str(&redacted[last..start]);
+            out.push_str(&format!("[tripwire:{id} partial]"));
+            last = end;
+        }
+        out.push_str(&redacted[last..]);
+        out
+    }
+
+    fn tail_index(&self) -> &TailIndex {
+        self.tails.get_or_init(|| {
+            TailIndex::new(self.files().flat_map(|(_, f)| {
+                f.tokens
+                    .iter()
+                    .map(|t| (t.id.as_str(), t.tail_hashes.as_slice()))
+            }))
+        })
+    }
+
     pub fn lookup(&self, id: &str) -> Option<Location<'_>> {
         self.files().find_map(|(plant, file)| {
             file.tokens.iter().find(|t| t.id == id).map(|t| Location {
@@ -385,30 +450,53 @@ mod tests {
     use super::*;
 
     fn sample_registry() -> Registry {
-        Registry {
-            plants: vec![Plant {
-                id: "p-abc123".into(),
-                created: "2026-11-12T00:00:00Z".into(),
-                root: "/sandbox".into(),
-                files: vec![PlantedFile {
-                    path: "/sandbox/.aws/credentials".into(),
-                    kind: Kind::Aws,
-                    sha256: "00".into(),
-                    tokens: vec![
-                        TokenField {
-                            id: "AAAAAAAA".into(),
-                            field: "aws_access_key_id".into(),
-                        },
-                        TokenField {
-                            id: "BBBBBBBB".into(),
-                            field: "aws_secret_access_key".into(),
-                        },
-                    ],
-                }],
-                created_dirs: vec!["/sandbox/.aws".into()],
-                listen: None,
+        Registry::new(vec![Plant {
+            id: "p-abc123".into(),
+            created: "2026-11-12T00:00:00Z".into(),
+            root: "/sandbox".into(),
+            files: vec![PlantedFile {
+                path: "/sandbox/.aws/credentials".into(),
+                kind: Kind::Aws,
+                sha256: "00".into(),
+                tokens: vec![
+                    TokenField {
+                        id: "AAAAAAAA".into(),
+                        field: "aws_access_key_id".into(),
+                        tail_hashes: vec![],
+                    },
+                    TokenField {
+                        id: "BBBBBBBB".into(),
+                        field: "aws_secret_access_key".into(),
+                        tail_hashes: vec![],
+                    },
+                ],
             }],
-        }
+            created_dirs: vec!["/sandbox/.aws".into()],
+            listen: None,
+        }])
+    }
+
+    #[test]
+    fn finds_and_redacts_tails_leaked_without_their_marker() {
+        use crate::partial::window_hashes;
+        use crate::token::{BASE64, random_string};
+        let tail = random_string(BASE64, 24);
+        let mut reg = sample_registry();
+        reg.plants[0].files[0].tokens[1].tail_hashes = window_hashes(&tail);
+        let reg = Registry::new(reg.plants);
+
+        let text = format!("aws configure set secret {tail} --profile x");
+        let hits: Vec<_> = reg
+            .find(&text)
+            .into_iter()
+            .map(|h| (h.id, h.encoding))
+            .collect();
+        assert_eq!(hits, vec![("BBBBBBBB".to_string(), Encoding::Partial)]);
+        assert_eq!(
+            reg.redact(&text),
+            "aws configure set secret [tripwire:BBBBBBBB partial] --profile x"
+        );
+        assert!(reg.find("nothing to see here").is_empty());
     }
 
     #[test]

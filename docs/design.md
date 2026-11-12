@@ -111,8 +111,8 @@ keys and credentials).
    created, with the SHA-256 of each file. `tripwire remove` deletes a file
    only if its hash still matches, removes directories only if it created
    them and they are now empty, and reports anything it left behind.
-6. **Registry holds no secrets.** It stores ids, paths and hashes, never
-   planted values, and ids are printed without the marker. An agent that
+6. **Registry holds no secrets.** It stores ids, paths, file hashes and tail
+   window hashes, never planted values, and ids are printed without the marker. An agent that
    reads the registry, `tripwire list` output or the alert log does not
    ingest a matchable token and does not trigger false leak alerts.
 7. **Git warning.** When planting a `.env` into a Git work tree where it is
@@ -229,6 +229,16 @@ and looks the id up in the registry. It searches:
 Decoding goes one level deep. Hits with valid check characters but an unknown
 id are reported as `unregistered` at low severity (for example a token from a
 removed plant).
+
+**Partial leaks.** An agent can strip the marker and send only a value's
+random tail. When planting, the registry records truncated SHA-256 hashes of
+every 16-character window of each tail (never the tail itself; recovering a
+window means searching at least 62^16 candidates). The matcher hashes every
+16-character window of runs of tail characters in the text and reports
+matches as encoding `partial`; matching tails are redacted as
+`[tripwire:<id> partial]`. AWS access key ids have no random tail, so this
+covers secrets, passwords, API tokens and the SSH key body. Tails are matched
+in raw text only, not inside encodings.
 
 ### 4. Use detection (`tripwire listen`, optional)
 

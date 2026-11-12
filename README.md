@@ -201,7 +201,10 @@ Every planted value contains `TRIPWIRE` followed by an 8-character base32 id
 (6 random characters and 2 check characters). The matcher looks for that
 pattern case-insensitively in raw text, JSON strings, and percent-encoded,
 base64 and hex runs. It then validates the check characters and looks the id
-up in the registry.
+up in the registry. To catch an agent that strips the prefix and leaks only
+the random part of a value, the registry also keeps hashes of 16-character
+windows of each value's tail. Those leaks are reported with encoding
+`partial`.
 
 On macOS, no unprivileged API reports file reads, so `watch` sets each planted
 file's access time just before its modification time and polls for it to move
