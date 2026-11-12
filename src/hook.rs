@@ -43,13 +43,33 @@ pub fn evaluate(
     match field("hook_event_name").unwrap_or("") {
         "PreToolUse" => {
             let input = event.get("tool_input").unwrap_or(&Value::Null);
+            let mut targets: Vec<(&str, PathBuf, Target)> = registry
+                .files()
+                .map(|(plant, file)| (plant.id.as_str(), file.path.clone(), Target::File))
+                .collect();
+            // Directories that hold planted files, such as `.aws` and `.ssh`.
+            // Plant roots are excluded: naming a project or home is normal.
             for (plant, file) in registry.files() {
-                if let Some(detail) = targets_file(input, &file.path, cwd.as_deref(), homes) {
+                if let Some(parent) = file.path.parent()
+                    && parent != plant.root
+                    && !targets.iter().any(|(_, p, _)| p == parent)
+                {
+                    targets.push((plant.id.as_str(), parent.to_path_buf(), Target::Dir));
+                }
+            }
+            let mut flagged: Vec<PathBuf> = Vec::new();
+            for (plant_id, path, target) in targets {
+                // A named file already accounts for its directory.
+                if target == Target::Dir && flagged.iter().any(|f| f.parent() == Some(&path)) {
+                    continue;
+                }
+                if let Some(detail) = names_path(input, &path, target, cwd.as_deref(), homes) {
                     let mut alert = base(AlertKind::ReadAttempt);
-                    alert.plant_id = Some(plant.id.clone());
-                    alert.file = Some(file.path.clone());
+                    alert.plant_id = Some(plant_id.to_string());
+                    alert.file = Some(path.clone());
                     alert.detail = Some(excerpt(&detail));
                     out.alerts.push(alert);
+                    flagged.push(path);
                 }
             }
             let exfil = token_alerts(input, registry, || base(AlertKind::Exfil));
@@ -104,11 +124,19 @@ fn collect_strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    File,
+    /// A directory: also matches when a command continues into it (`dir/*`).
+    Dir,
+}
+
 /// If the tool input names `file` through a path field or a shell command,
 /// returns the text that names it.
-fn targets_file(
+fn names_path(
     input: &Value,
     file: &Path,
+    target: Target,
     cwd: Option<&Path>,
     homes: &[PathBuf],
 ) -> Option<String> {
@@ -159,7 +187,7 @@ fn targets_file(
     }
     needles
         .iter()
-        .any(|n| mentions(&command, n))
+        .any(|n| mentions(&command, n, target == Target::Dir))
         .then_some(command)
 }
 
@@ -173,11 +201,13 @@ fn with_canonical(path: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// True if `needle` occurs in `command` as a whole shell word or quoted path.
-fn mentions(command: &str, needle: &str) -> bool {
+/// True if `needle` occurs in `command` as a whole shell word or quoted path,
+/// or with `into_dir`, as the start of a path inside it.
+fn mentions(command: &str, needle: &str, into_dir: bool) -> bool {
     let before_ok = |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || "\"'=<(`:".contains(c));
-    let after_ok =
-        |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || "\"';|&)>`,".contains(c));
+    let after_ok = |c: Option<char>| {
+        c.is_none_or(|c| c.is_whitespace() || "\"';|&)>`,".contains(c) || (into_dir && c == '/'))
+    };
     command.match_indices(needle).any(|(i, m)| {
         before_ok(command[..i].chars().next_back())
             && after_ok(command[i + m.len()..].chars().next())
@@ -319,6 +349,59 @@ mod tests {
             assert_eq!(kinds(&out), vec![AlertKind::ReadAttempt], "{cmd}");
         }
         for cmd in ["cat .env.example", "cat other/.env", "ls -la"] {
+            let out = run(&fx, &pre("Bash", json!({"command": cmd})), false);
+            assert!(out.alerts.is_empty(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn commands_reaching_planted_files_through_their_directory_are_read_attempts() {
+        let fx = fixture();
+        for cmd in [
+            "cat ~/.aws/*",
+            "cd ~/.aws && cat credentials",
+            "tar czf /tmp/a.tgz /sb/.aws",
+        ] {
+            let out = run(&fx, &pre("Bash", json!({"command": cmd})), false);
+            assert_eq!(kinds(&out), vec![AlertKind::ReadAttempt], "{cmd}");
+            assert_eq!(
+                out.alerts[0].file.as_deref(),
+                Some(Path::new("/sb/.aws")),
+                "{cmd}"
+            );
+        }
+        let grep = run(
+            &fx,
+            &pre("Grep", json!({"pattern": "KEY", "path": "/sb/.aws"})),
+            false,
+        );
+        assert_eq!(kinds(&grep), vec![AlertKind::ReadAttempt]);
+    }
+
+    #[test]
+    fn naming_a_planted_file_does_not_also_flag_its_directory() {
+        let fx = fixture();
+        let out = run(
+            &fx,
+            &pre("Bash", json!({"command": "cat ~/.aws/credentials"})),
+            false,
+        );
+        assert_eq!(kinds(&out), vec![AlertKind::ReadAttempt]);
+        assert_eq!(
+            out.alerts[0].file.as_deref(),
+            Some(Path::new("/sb/.aws/credentials"))
+        );
+    }
+
+    #[test]
+    fn plant_roots_and_lookalike_directories_are_not_flagged() {
+        let fx = fixture();
+        for cmd in [
+            "grep -r KEY .",
+            "ls ~",
+            "ls ~/.awsome",
+            "cat /sb/.aws-notes",
+        ] {
             let out = run(&fx, &pre("Bash", json!({"command": cmd})), false);
             assert!(out.alerts.is_empty(), "{cmd}");
         }
