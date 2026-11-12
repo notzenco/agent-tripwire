@@ -4,6 +4,7 @@
 pub mod hook;
 pub mod listen;
 pub mod matcher;
+pub mod notify;
 pub mod partial;
 pub mod plant;
 pub mod scan;

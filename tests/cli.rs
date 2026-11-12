@@ -206,6 +206,22 @@ fn hook_block_denies_exfil_with_exit_two() {
 }
 
 #[test]
+fn hook_accepts_notify_and_still_logs() {
+    let env = env();
+    env.plant(&env.work);
+    let event = json!({"hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": env.work,
+        "tool_input": {"file_path": ".env"}});
+    // PATH without notifiers: notification is best effort and must not fail the hook.
+    env.cmd()
+        .args(["hook", "--notify"])
+        .env("PATH", "/nonexistent")
+        .write_stdin(event.to_string())
+        .assert()
+        .code(0);
+    assert_eq!(env.alerts()[0]["kind"], "read-attempt");
+}
+
+#[test]
 fn hook_never_fails_on_bad_input() {
     let env = env();
     env.cmd()
