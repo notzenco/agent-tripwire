@@ -152,8 +152,9 @@ hook. agent-tripwire does not edit agent configuration itself.
 
 Watches every registered planted file, without root or system extensions.
 
-- **Linux:** inotify (`IN_OPEN`, `IN_ACCESS`, `IN_MODIFY`, `IN_DELETE_SELF`,
-  `IN_MOVE_SELF`) on each planted file. Unprivileged for files the user owns.
+- **Linux:** inotify `IN_ACCESS` on each planted file, which fires when data
+  is read. `IN_OPEN` is not used because it also fires for writers and for
+  the watcher's own bookkeeping opens. Unprivileged for files the user owns.
   `fanotify` would give process ids but needs `CAP_SYS_ADMIN`, so it is out.
 - **macOS:** FSEvents and kqueue do not report opens or reads, and Endpoint
   Security, DTrace and `fs_usage` all need root or an entitlement. v1 uses
@@ -163,8 +164,8 @@ Watches every registered planted file, without root or system extensions.
   poll every 500 ms notices. Modification and deletion are detected from
   mtime, size and existence on the same poll.
 - The atime method is also the fallback on Linux when inotify is
-  unavailable, and is used for files on `noatime` mounts only with a
-  warning that reads cannot be seen.
+  unavailable. On a `noatime` mount it cannot see reads; v1 documents this
+  rather than detecting the mount option.
 
 Limits, stated in alerts and the README:
 
@@ -203,7 +204,7 @@ One matcher is shared by all channels. It looks for `tripwire` +
 and looks the id up in the registry. It searches:
 
 - the raw text and JSON-decoded string values;
-- percent-decoded runs (URL query strings and bodies);
+- percent-encoded runs (URL path and query segments), decoded;
 - base64 (standard and URL-safe) runs of 16 or more characters, decoded;
 - hex runs of 32 or more characters, decoded.
 
@@ -231,8 +232,10 @@ Alerts are appended as JSON lines to `<state>/alerts.jsonl`:
  "tool":"Bash","session":"…","detail":"curl -d … [tripwire:K7Q2MZXA] …"}
 ```
 
-The `detail` field is redacted: matched values are replaced with
-`[tripwire:<id>]`, so the log is safe to read and to re-scan. Alerts are also
+The `detail` field is redacted: each planted value, including its random
+tail, is replaced with `[tripwire:<id>]`, and an encoded run holding one with
+`[tripwire:<id> <encoding>]`, so the log is safe to read and to re-scan while
+keeping the surrounding command or URL. Alerts are also
 printed to stderr, and `--notify` sends a desktop notification through
 `osascript` (macOS) or `notify-send` (Linux) when present.
 
@@ -253,13 +256,14 @@ Writes go through a temporary file and rename.
 tripwire sandbox [PATH] [--listen PORT]   create a sandbox HOME, plant the home profile,
                                            print `export HOME=…`
 tripwire plant <DIR> [--profile home|project] [--kind K]… [--listen PORT]
+                                           (default profile: project)
 tripwire list [--json]                     plants, files and token ids
-tripwire remove <PLANT_ID|--all>           delete planted files (hash-checked)
+tripwire remove <PLANT_ID>… | --all        delete planted files (hash-checked)
 tripwire watch [--transcripts DIR]… [--notify] [--interval MS]
 tripwire scan <PATH>… [--json]             scan transcripts or text files
 tripwire hook [--block]                    read one hook event on stdin
 tripwire hook config claude|codex          print the hook settings snippet
-tripwire listen [--port PORT]              local use-detection listener
+tripwire listen [--port PORT]              local use-detection listener (default 8787)
 tripwire alerts [--json] [--since TIME]    show the alert log
 ```
 
@@ -271,8 +275,8 @@ always exits 0 unless `--block` denies a call.
 - Rust 2024 edition, single binary crate with a library core so tests drive
   the matcher, registry and hook logic directly; CLI tests use `assert_cmd`
   against a temporary state dir.
-- Runtime dependencies: `clap`, `serde`, `serde_json`, `sha2`, `base64`,
-  `getrandom`, `libc` (password database, `utimensat`; bindings only, no
+- Runtime dependencies: `clap`, `serde`, `serde_json`, `anyhow`, `sha2`,
+  `base64`, `getrandom`, `libc` (password database, `utimensat`; bindings only, no
   native build), and `inotify` on Linux only (bindings to a kernel API,
   unprivileged). Nothing needs root or a kernel or system extension.
 - Dev dependencies: `tempfile`, `assert_cmd`, `predicates`.

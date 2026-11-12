@@ -2,6 +2,13 @@
 name = "agent-tripwire"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "Honeytoken credentials that alert when an AI coding agent reads, leaks or uses them"
+license = "MIT"
+repository = "https://github.com/notzenco/agent-tripwire"
+readme = "README.md"
+keywords = ["security", "honeytoken", "ai-agents", "canary", "detection"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.104"
