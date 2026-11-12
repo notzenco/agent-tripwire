@@ -214,7 +214,8 @@ its JSON path, so a hit is classified by where it occurred:
 | --------------------------------------------------- | -------------- |
 | tool call input (`tool_use.input`, `function_call`) | `exfil`        |
 | tool result (`tool_result`, `function_call_output`) | `read`         |
-| assistant text                                      | `disclosed`    |
+| Codex `CommandExecution` item: `command` / `aggregated_output` | `exfil` / `read` |
+| assistant text (`role: assistant`, `AgentMessage`)  | `disclosed`    |
 | anything else                                       | `mention`      |
 
 Non-JSON lines are scanned as text and classified `mention`.
