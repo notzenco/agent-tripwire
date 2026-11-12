@@ -192,7 +192,7 @@ impl Alert {
             parts.push(format!("{}{field}", file.display()));
         }
         if let Some(enc) = self.encoding.filter(|e| *e != Encoding::Raw) {
-            parts.push(format!("encoded {enc:?}").to_lowercase());
+            parts.push(format!("encoded {}", enc.as_str()));
         }
         if let Some(tool) = &self.tool {
             parts.push(format!("tool {tool}"));

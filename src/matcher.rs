@@ -19,6 +19,17 @@ pub enum Encoding {
     Hex,
 }
 
+impl Encoding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Encoding::Raw => "raw",
+            Encoding::Percent => "percent",
+            Encoding::Base64 => "base64",
+            Encoding::Hex => "hex",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Hit {
     pub id: String,
@@ -63,8 +74,8 @@ pub fn redact(text: &str) -> String {
     for run in decoded_runs(bytes) {
         let ids = scan_bytes(&run.bytes);
         if !ids.is_empty() {
-            let encoding = format!("{:?}", run.encoding).to_lowercase();
-            spans.push((run.start, run.end, format!("{} {encoding}", ids.join(","))));
+            let label = format!("{} {}", ids.join(","), run.encoding.as_str());
+            spans.push((run.start, run.end, label));
         }
     }
     spans.sort_by_key(|&(start, end, _)| (start, std::cmp::Reverse(end)));

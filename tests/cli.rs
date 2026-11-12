@@ -155,6 +155,7 @@ fn scan_reports_exfil_without_printing_the_token() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("exfil"), "{stdout}");
     assert!(stdout.contains("API_TOKEN"), "{stdout}");
+    assert!(stdout.contains("[raw]"), "{stdout}");
     assert!(!stdout.contains(&token[..16]), "{stdout}");
 }
 

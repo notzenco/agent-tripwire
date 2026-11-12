@@ -302,12 +302,12 @@ fn scan_paths(paths: &[PathBuf], json: bool) -> Result<ExitCode> {
                     .map(|l| format!(" ({} {})", l.file.path.display(), l.field))
                     .unwrap_or_default();
                 println!(
-                    "{}:{}: {} token {}{place} [{:?}] at {} — {}",
+                    "{}:{}: {} token {}{place} [{}] at {} — {}",
                     found.path.display(),
                     found.line,
                     f.kind.as_str(),
                     f.id,
-                    f.encoding,
+                    f.encoding.as_str(),
                     f.location,
                     f.excerpt,
                 );
