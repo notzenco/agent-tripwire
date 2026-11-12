@@ -8,7 +8,7 @@ when it **reads** them, **sends them out**, or **uses** them.
 agent-tripwire writes honeytoken files (`.env`, `~/.aws/credentials`,
 `~/.npmrc`, an SSH key) into a sandbox you name. Each value contains a unique,
 checksummed id, so a match is unambiguous and points at the exact file and field.
-Three detectors watch for those values:
+Four detectors watch for those values:
 
 | Detector | Catches | How |
 | --- | --- | --- |
@@ -50,7 +50,29 @@ cargo install --locked --git https://github.com/notzenco/agent-tripwire
 Or from a checkout: `cargo install --locked --path .`. The binary is named
 `tripwire`. It supports macOS and Linux.
 
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `tripwire sandbox [PATH] [--listen PORT]` | Create a new directory to use as an agent's `HOME` and plant AWS, npm and SSH honeytokens in it |
+| `tripwire plant <DIR> [--profile project\|home] [--kind K]… [--listen PORT]` | Plant into an existing directory (`project`, the default, plants `.env`) |
+| `tripwire list [--json]` | Show plants, their files and token ids |
+| `tripwire remove <PLANT_ID>… \| --all` | Delete planted files that are unchanged, and directories tripwire created |
+| `tripwire hook [--block]` | Handle one agent hook event from stdin |
+| `tripwire hook config claude\|codex` | Print the hook settings snippet |
+| `tripwire watch [--transcripts DIR]… [--notify] [--interval MS]` | Watch planted files and tail transcripts until interrupted |
+| `tripwire scan <PATH>… [--json]` | Scan transcripts or text files; directories expand to their `.jsonl` files |
+| `tripwire listen [--port PORT]` | Run the local use-detection listener (default port 8787) |
+| `tripwire alerts [--json] [--since TIME]` | Show the alert log; `--since` takes an RFC 3339 time or a date prefix |
+
+Exit status is `0` on success, `1` when `scan` finds something, and `2` on an
+error. `hook` always exits `0` so it never breaks the agent, except that
+`--block` exits `2` to deny a call that would send a token out.
+
 ## Demo walkthrough
+
+Paths in the sample output are shortened to `~/…`; tripwire prints them in
+full.
 
 ### 1. Try it without an agent
 
