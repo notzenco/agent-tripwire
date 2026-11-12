@@ -343,9 +343,27 @@ and `listen` run until interrupted.
 ## Status
 
 Everything in the CLI section is implemented and covered by tests that run
-on macOS and Linux. Verified by hand: `watch` read and modification
-detection on macOS, `listen` with a real `npm whoami` in a sandbox, and
-`remove` leaving a sandbox in place when the agent wrote its own files there.
-Not yet verified: a live Claude Code or Codex session with the hook installed
-(the tests use the documented event payloads), and the AWS CLI against the
-listener.
+on macOS and Linux.
+
+Verified by hand:
+
+- `watch` read and modification detection on macOS.
+- `listen` with a real `npm whoami` in a sandbox, and `remove` leaving a
+  sandbox in place when the tool wrote its own files there.
+- **Claude Code 2.1** with the hook passed through `--settings`: a Bash
+  command opening `.env` raised `read-attempt`, and a `Read` of `.env` raised
+  `read-attempt` before the call and one `read` per token after it. `scan` of
+  the session transcript found the same reads.
+- **Codex 0.167** transcripts: `scan` classifies command output as `read`
+  (this run found and fixed the `CommandExecution` case).
+
+Not yet verified:
+
+- The hook inside Codex. Codex records a trust state for each hook, and in
+  `codex exec` a new, unreviewed hook did not run, whether given in a
+  project `.codex/hooks.json` or inline with `-c`. It has to be enabled once
+  in Codex's `/hooks` browser. The snippet matches the format of a working
+  Codex `hooks.json`.
+- The AWS CLI against the listener.
+- `exfil` from a live agent: in testing, the model declined to put the
+  token into a command. Hook and transcript tests cover the payloads.
