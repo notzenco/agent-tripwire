@@ -3,5 +3,6 @@
 
 pub mod matcher;
 pub mod plant;
+pub mod scan;
 pub mod state;
 pub mod token;
