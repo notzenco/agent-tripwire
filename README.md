@@ -58,7 +58,7 @@ Or from a checkout: `cargo install --locked --path .`. The binary is named
 | `tripwire plant <DIR> [--profile project\|home] [--kind K]… [--listen PORT]` | Plant into an existing directory (`project`, the default, plants `.env`) |
 | `tripwire list [--json]` | Show plants, their files and token ids |
 | `tripwire remove <PLANT_ID>… \| --all` | Delete planted files that are unchanged, and directories tripwire created |
-| `tripwire hook [--block]` | Handle one agent hook event from stdin |
+| `tripwire hook [--block] [--notify]` | Handle one agent hook event from stdin |
 | `tripwire hook config claude\|codex` | Print the hook settings snippet |
 | `tripwire watch [--transcripts DIR]… [--notify] [--interval MS]` | Watch planted files and tail transcripts until interrupted |
 | `tripwire scan <PATH>… [--json]` | Scan transcripts or text files; directories expand to their `.jsonl` files |
@@ -147,7 +147,9 @@ instead. `--profile home` or `--kind aws --kind ssh` choose other sets.
 snippet to merge into `~/.claude/settings.json` (or `~/.codex/hooks.json`). It
 runs `tripwire hook` on every `PreToolUse` and `PostToolUse` event. Hooks only
 observe by default; add `--block` to the command to deny tool calls that would
-send a token out.
+send a token out. Claude Code does not show a hook's output when it exits
+cleanly, so add `--notify` to get a desktop notification for each alert, or
+keep `tripwire watch` running.
 
 **c. Start the detectors** in two terminals:
 

@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 
 use agent_tripwire::hook::{self, Agent};
 use agent_tripwire::listen;
+use agent_tripwire::notify;
 use agent_tripwire::plant::{self, PlantOutcome, PlantRequest, Profile};
 use agent_tripwire::scan;
 use agent_tripwire::state::{Kind, Registry, State, real_home};
@@ -70,6 +71,9 @@ enum Cmd {
         /// Deny PreToolUse calls that would send a token out.
         #[arg(long)]
         block: bool,
+        /// Send a desktop notification for each alert.
+        #[arg(long)]
+        notify: bool,
         #[command(subcommand)]
         command: Option<HookCmd>,
     },
@@ -166,8 +170,9 @@ fn run(command: Cmd) -> Result<ExitCode> {
         }
         Cmd::Hook {
             block,
+            notify,
             command: None,
-        } => Ok(run_hook(block)),
+        } => Ok(run_hook(block, notify)),
         Cmd::Watch {
             transcripts,
             notify,
@@ -325,7 +330,7 @@ fn scan_paths(paths: &[PathBuf], json: bool) -> Result<ExitCode> {
 }
 
 /// Never fails the agent: problems are reported on stderr and exit 0.
-fn run_hook(block: bool) -> ExitCode {
+fn run_hook(block: bool, notify: bool) -> ExitCode {
     let mut input = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("tripwire hook: cannot read stdin: {e}");
@@ -360,6 +365,10 @@ fn run_hook(block: bool) -> ExitCode {
             eprintln!("tripwire hook: {e:#}");
         }
         eprintln!("tripwire: {}", alert.summary());
+        if notify {
+            // Not waited for: the hook must return to the agent promptly.
+            notify::desktop(&alert.summary());
+        }
     }
     match outcome.deny {
         Some(reason) => {
@@ -393,35 +402,11 @@ fn watch(transcripts: Vec<PathBuf>, notify: bool, interval: u64) -> Result<ExitC
             }
             let line = alert.summary();
             println!("{line}");
-            if notify {
-                desktop_notify(&line);
+            if notify && let Some(mut child) = notify::desktop(&line) {
+                std::thread::spawn(move || child.wait());
             }
         }
         std::thread::sleep(Duration::from_millis(interval));
-    }
-}
-
-/// Best effort; a missing notifier is not an error.
-fn desktop_notify(message: &str) {
-    let result = if cfg!(target_os = "macos") {
-        let quoted = message.replace('\\', "\\\\").replace('"', "\\\"");
-        Command::new("osascript")
-            .arg("-e")
-            .arg(format!(
-                "display notification \"{quoted}\" with title \"agent-tripwire\""
-            ))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    } else {
-        Command::new("notify-send")
-            .args(["agent-tripwire", message])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    };
-    if let Ok(mut child) = result {
-        std::thread::spawn(move || child.wait());
     }
 }
 

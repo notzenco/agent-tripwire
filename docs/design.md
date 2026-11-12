@@ -158,6 +158,10 @@ hook never fails the agent: malformed input or a missing registry is logged
 and the hook exits 0. Messages it writes back to the agent never contain the
 marker.
 
+`--notify` also sends a desktop notification for each alert, without waiting
+for the notifier, because agents such as Claude Code do not show the output
+of a hook that exits 0.
+
 `tripwire hook config claude|codex` prints the settings snippet to install the
 hook. agent-tripwire does not edit agent configuration itself.
 
@@ -272,7 +276,7 @@ keeping the surrounding command or URL. If a token would still remain, the
 whole detail is replaced. Sources are `hook`, `watch`, `transcript` and
 `listen`; `scan` reports to stdout and does not write to the log. `hook`
 prints alerts to stderr, `watch` and `listen` print them to stdout, and
-`watch --notify` also sends a desktop notification through `osascript`
+`hook --notify` and `watch --notify` also send a desktop notification through `osascript`
 (macOS) or `notify-send` (Linux) when present.
 
 Kinds, in decreasing severity: `exfil`, `use`, `read`, `read-attempt`,
@@ -298,7 +302,7 @@ tripwire list [--json]                     plants, files and token ids
 tripwire remove <PLANT_ID>… | --all        delete planted files (hash-checked)
 tripwire watch [--transcripts DIR]… [--notify] [--interval MS]
 tripwire scan <PATH>… [--json]             scan transcripts or text files
-tripwire hook [--block]                    read one hook event on stdin
+tripwire hook [--block] [--notify]         read one hook event on stdin
 tripwire hook config claude|codex          print the hook settings snippet
 tripwire listen [--port PORT]              local use-detection listener (default 8787)
 tripwire alerts [--json] [--since TIME]    show the alert log
