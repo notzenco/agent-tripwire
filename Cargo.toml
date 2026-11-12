@@ -2,7 +2,7 @@
 name = "agent-tripwire"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Honeytoken credentials that alert when an AI coding agent reads, leaks or uses them"
 license = "MIT"
 repository = "https://github.com/notzenco/agent-tripwire"

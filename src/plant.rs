@@ -75,6 +75,7 @@ struct Planned {
 }
 
 pub fn plant(state: &State, req: &PlantRequest) -> Result<PlantOutcome> {
+    let _lock = state.lock()?;
     let mut registry = state.load_registry()?;
     let root = resolve_root(req)?;
     check_target(&root, &req.real_home)?;
@@ -118,6 +119,7 @@ pub fn plant(state: &State, req: &PlantRequest) -> Result<PlantOutcome> {
 }
 
 pub fn remove(state: &State, plant_id: &str) -> Result<RemoveReport> {
+    let _lock = state.lock()?;
     let mut registry = state.load_registry()?;
     let Some(index) = registry.plants.iter().position(|p| p.id == plant_id) else {
         bail!("no plant with id {plant_id}");
@@ -619,6 +621,26 @@ mod tests {
         assert_eq!(lines.first(), Some(&"-----BEGIN OPENSSH PRIVATE KEY-----"));
         assert_eq!(lines.last(), Some(&"-----END OPENSSH PRIVATE KEY-----"));
         assert!(lines[1..lines.len() - 1].iter().all(|l| l.len() <= 70));
+    }
+
+    #[test]
+    fn concurrent_plants_are_all_registered() {
+        let env = env();
+        let dirs: Vec<PathBuf> = (0..16)
+            .map(|i| {
+                let d = env.work.join(format!("d{i}"));
+                fs::create_dir(&d).unwrap();
+                d
+            })
+            .collect();
+        std::thread::scope(|scope| {
+            for dir in &dirs {
+                let req = request(&env, dir, &[Kind::Env]);
+                let state = &env.state;
+                scope.spawn(move || plant(state, &req).unwrap());
+            }
+        });
+        assert_eq!(env.state.load_registry().unwrap().plants.len(), dirs.len());
     }
 
     #[test]

@@ -211,6 +211,11 @@ pub struct State {
     dir: PathBuf,
 }
 
+/// Held while the registry is being changed; see [`State::lock`].
+pub struct RegistryLock {
+    _file: std::fs::File,
+}
+
 impl State {
     pub fn at(dir: impl Into<PathBuf>) -> State {
         State { dir: dir.into() }
@@ -246,6 +251,23 @@ impl State {
             .mode(0o700)
             .create(&self.dir)
             .with_context(|| format!("creating state directory {}", self.dir.display()))
+    }
+
+    /// Exclusive lock for a load-modify-save of the registry, released on
+    /// drop. Readers do not lock: saves replace the file atomically.
+    pub fn lock(&self) -> Result<RegistryLock> {
+        self.ensure_dir()?;
+        let path = self.dir.join("registry.lock");
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("locking {}", path.display()))?;
+        Ok(RegistryLock { _file: file })
     }
 
     pub fn load_registry(&self) -> Result<Registry> {

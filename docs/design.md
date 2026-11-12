@@ -301,7 +301,7 @@ and `listen` run until interrupted.
   API, unprivileged). Access times are set through the standard library.
   Nothing needs root or a kernel or system extension.
 - Dev dependencies: `tempfile`, `assert_cmd`, `predicates`.
-- Minimum Rust version 1.88 (let-chains and `as_chunks`).
+- Minimum Rust version 1.89 (let-chains, `as_chunks`, `File::lock`).
 - CI (GitHub Actions, Linux and macOS): `cargo fmt --all --check`,
   `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`.
 
