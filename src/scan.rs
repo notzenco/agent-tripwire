@@ -132,8 +132,13 @@ fn walk<'a>(
     }
 }
 
+/// A redacted, single-line, length-limited excerpt of `text`.
 pub(crate) fn excerpt(registry: &Registry, text: &str) -> String {
-    let redacted = registry.redact(text);
+    let redacted = registry
+        .redact(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     match redacted.char_indices().nth(EXCERPT_CHARS) {
         Some((cut, _)) => format!("{}…", &redacted[..cut]),
         None => redacted,
@@ -314,6 +319,22 @@ mod tests {
             !found[0].excerpt.contains(&tail[..16]),
             "{}",
             found[0].excerpt
+        );
+    }
+
+    #[test]
+    fn excerpts_are_single_line() {
+        let (reg, tok, _) = setup();
+        let line = json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": format!("1\tNODE_ENV=production\n2\tAPI_TOKEN={tok}\n")}
+        ]}});
+        let found = scan_line(&line.to_string(), &reg);
+        assert_eq!(
+            found[0].excerpt,
+            format!(
+                "1 NODE_ENV=production 2 API_TOKEN=[tripwire:{}]",
+                found[0].id
+            )
         );
     }
 
