@@ -224,9 +224,11 @@ and looks the id up in the registry. It searches:
 - the raw text and JSON-decoded string values;
 - percent-encoded runs (URL path and query segments), decoded;
 - base64 (standard and URL-safe) runs of 16 or more characters, decoded;
-- hex runs of 32 or more characters, decoded.
+- hex runs of 32 or more characters, decoded;
+- gzip data inside a base64 or hex run (`gzip | base64`), decompressed up
+  to 1 MiB to bound decompression bombs.
 
-Decoding goes one level deep. Hits with valid check characters but an unknown
+Apart from gzip inside base64 or hex, decoding goes one level deep. Hits with valid check characters but an unknown
 id are reported as `unregistered` at low severity (for example a token from a
 removed plant).
 
@@ -312,7 +314,7 @@ and `listen` run until interrupted.
   the matcher, registry and hook logic directly; CLI tests use `assert_cmd`
   against a temporary state dir.
 - Runtime dependencies: `clap`, `serde`, `serde_json`, `anyhow`, `sha2`,
-  `base64`, `getrandom`, `libc` (password database and `O_NOFOLLOW`; bindings
+  `base64`, `flate2` (pure-Rust `miniz_oxide` backend), `getrandom`, `libc` (password database and `O_NOFOLLOW`; bindings
   only, no native build), and `inotify` on Linux only (bindings to a kernel
   API, unprivileged). Access times are set through the standard library.
   Nothing needs root or a kernel or system extension.

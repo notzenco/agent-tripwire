@@ -199,8 +199,8 @@ Alerts are appended to `alerts.jsonl` in the state directory:
 
 Every planted value contains `TRIPWIRE` followed by an 8-character base32 id
 (6 random characters and 2 check characters). The matcher looks for that
-pattern case-insensitively in raw text, JSON strings, and percent-encoded,
-base64 and hex runs. It then validates the check characters and looks the id
+pattern case-insensitively in raw text, JSON strings, percent-encoded,
+base64 and hex runs, and gzip data inside base64 or hex. It then validates the check characters and looks the id
 up in the registry. To catch an agent that strips the prefix and leaks only
 the random part of a value, the registry also keeps hashes of 16-character
 windows of each value's tail. Those leaks are reported with encoding
@@ -222,7 +222,8 @@ decisions.
   without hooks. On macOS, `watch` does not identify the reading process.
 - Read detection on macOS needs access times to be updated, which APFS does by
   default. On a `noatime` mount, `watch` only sees modification and deletion.
-- Content matching catches common encodings one level deep. An agent that
+- Content matching catches common encodings one level deep, plus gzip
+  inside base64 or hex. An agent that
   deliberately transforms tokens (encryption, splitting, character-by-character
   copying) can evade it. Read detection still fires.
 - agent-tripwire detects; it does not protect real credentials. Run agents

