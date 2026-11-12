@@ -17,6 +17,8 @@ pub enum Encoding {
     Percent,
     Base64,
     Hex,
+    /// A registered value's random tail without its marker.
+    Partial,
 }
 
 impl Encoding {
@@ -26,6 +28,7 @@ impl Encoding {
             Encoding::Percent => "percent",
             Encoding::Base64 => "base64",
             Encoding::Hex => "hex",
+            Encoding::Partial => "partial",
         }
     }
 }

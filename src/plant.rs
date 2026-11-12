@@ -16,6 +16,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use sha2::{Digest, Sha256};
 
+use crate::partial::window_hashes;
 use crate::state::{Kind, Plant, PlantedFile, Registry, State, TokenField, now_rfc3339};
 use crate::token::{BASE32, BASE62, BASE64, MARKER, new_id, random_string};
 
@@ -370,8 +371,24 @@ impl Tokens<'_> {
         fields.push(TokenField {
             id: id.clone(),
             field: field.to_string(),
+            tail_hashes: vec![],
         });
         format!("{MARKER}{id}")
+    }
+
+    /// `TRIPWIRE<id>` followed by a random tail, whose window hashes are
+    /// recorded so a leak of the tail alone is still recognised.
+    fn value(
+        &mut self,
+        fields: &mut Vec<TokenField>,
+        field: &str,
+        alphabet: &[u8],
+        tail_len: usize,
+    ) -> String {
+        let marker = self.next(fields, field);
+        let tail = random_string(alphabet, tail_len);
+        fields.last_mut().expect("just pushed").tail_hashes = window_hashes(&tail);
+        format!("{marker}{tail}")
     }
 }
 
@@ -398,19 +415,16 @@ fn render(req: &PlantRequest, registry: &Registry) -> Vec<Planned> {
         let (rel, contents) = match kind {
             Kind::Env => {
                 let key_id = tokens.next(&mut fields, "AWS_ACCESS_KEY_ID");
-                let secret = tokens.next(&mut fields, "AWS_SECRET_ACCESS_KEY");
-                let db = tokens.next(&mut fields, "DATABASE_URL");
-                let api = tokens.next(&mut fields, "API_TOKEN");
+                let secret = tokens.value(&mut fields, "AWS_SECRET_ACCESS_KEY", BASE64, 24);
+                let db = tokens.value(&mut fields, "DATABASE_URL", BASE62, 16);
+                let api = tokens.value(&mut fields, "API_TOKEN", BASE62, 32);
                 let mut text = format!(
                     "NODE_ENV=production\n\
                      AWS_ACCESS_KEY_ID=AKIA{key_id}\n\
-                     AWS_SECRET_ACCESS_KEY={secret}{}\n\
+                     AWS_SECRET_ACCESS_KEY={secret}\n\
                      AWS_REGION=us-east-1\n\
-                     DATABASE_URL=postgres://app:{db}{}@db.internal.invalid:5432/app\n\
-                     API_TOKEN={api}{}\n",
-                    random_string(BASE64, 24),
-                    random_string(BASE62, 16),
-                    random_string(BASE62, 32),
+                     DATABASE_URL=postgres://app:{db}@db.internal.invalid:5432/app\n\
+                     API_TOKEN={api}\n"
                 );
                 if let Some(url) = &listen_url {
                     text.push_str(&format!("API_BASE_URL={url}\n"));
@@ -419,7 +433,7 @@ fn render(req: &PlantRequest, registry: &Registry) -> Vec<Planned> {
             }
             Kind::Aws => {
                 let key_id = tokens.next(&mut fields, "aws_access_key_id");
-                let secret = tokens.next(&mut fields, "aws_secret_access_key");
+                let secret = tokens.value(&mut fields, "aws_secret_access_key", BASE64, 24);
                 if let Some(url) = &listen_url {
                     out.push(Planned {
                         rel: ".aws/config".into(),
@@ -434,16 +448,14 @@ fn render(req: &PlantRequest, registry: &Registry) -> Vec<Planned> {
                     format!(
                         "[default]\n\
                          aws_access_key_id = AKIA{key_id}\n\
-                         aws_secret_access_key = {secret}{}\n",
-                        random_string(BASE64, 24)
+                         aws_secret_access_key = {secret}\n"
                     ),
                 )
             }
             Kind::Npm => {
                 let token = format!(
-                    "npm_{}{}",
-                    tokens.next(&mut fields, "_authToken"),
-                    random_string(BASE62, 20)
+                    "npm_{}",
+                    tokens.value(&mut fields, "_authToken", BASE62, 20)
                 );
                 let text = match &listen_url {
                     Some(url) => format!(
@@ -455,8 +467,9 @@ fn render(req: &PlantRequest, registry: &Registry) -> Vec<Planned> {
                 (".npmrc", text)
             }
             Kind::Ssh => {
-                let marker = tokens.next(&mut fields, "private_key");
-                (".ssh/id_ed25519", ssh_private_key(&marker))
+                // 80 header characters + 16 marker characters + 304 = 400.
+                let value = tokens.value(&mut fields, "private_key", BASE64, 304);
+                (".ssh/id_ed25519", ssh_private_key(&value))
             }
             Kind::Support => continue,
         };
@@ -471,9 +484,9 @@ fn render(req: &PlantRequest, registry: &Registry) -> Vec<Planned> {
     out
 }
 
-/// An OpenSSH private-key block with a genuine ed25519 header, then the
-/// marker, then random filler. It does not parse as a key.
-fn ssh_private_key(marker: &str) -> String {
+/// An OpenSSH private-key block with a genuine ed25519 header followed by
+/// the planted value. It does not parse as a key.
+fn ssh_private_key(value: &str) -> String {
     let mut header = b"openssh-key-v1\0".to_vec();
     for field in [&b"none"[..], b"none", b""] {
         header.extend((field.len() as u32).to_be_bytes());
@@ -486,8 +499,7 @@ fn ssh_private_key(marker: &str) -> String {
     header.extend(32u32.to_be_bytes());
     // 60 bytes encode to 80 characters with no padding.
     let mut body = STANDARD.encode(&header[..60]);
-    body.push_str(marker);
-    body.push_str(&random_string(BASE64, 400 - body.len()));
+    body.push_str(value);
     let mut text = String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n");
     for line in body.as_bytes().chunks(70) {
         text.push_str(std::str::from_utf8(line).expect("base64 is ASCII"));
@@ -641,6 +653,37 @@ mod tests {
             }
         });
         assert_eq!(env.state.load_registry().unwrap().plants.len(), dirs.len());
+    }
+
+    #[test]
+    fn tails_are_registered_as_hashes_only() {
+        let env = env();
+        let out = plant(&env.state, &request(&env, &env.work, &all_kinds())).unwrap();
+        let fields: Vec<_> = out.plant.files.iter().flat_map(|f| &f.tokens).collect();
+        let field = |name: &str| fields.iter().find(|t| t.field == name).unwrap();
+        assert!(field("aws_access_key_id").tail_hashes.is_empty());
+        for name in [
+            "aws_secret_access_key",
+            "API_TOKEN",
+            "DATABASE_URL",
+            "_authToken",
+            "private_key",
+        ] {
+            assert!(!field(name).tail_hashes.is_empty(), "{name}");
+        }
+
+        let dotenv = fs::read_to_string(env.work.join(".env")).unwrap();
+        let api = dotenv
+            .lines()
+            .find_map(|l| l.strip_prefix("API_TOKEN="))
+            .unwrap();
+        let tail = &api[MARKER.len() + crate::token::ID_LEN..];
+        let registry = fs::read_to_string(env.state.dir().join("registry.json")).unwrap();
+        assert!(!registry.contains(&tail[..crate::partial::WINDOW]));
+        let reloaded = env.state.load_registry().unwrap();
+        let hits = reloaded.find(&format!("leak {tail}"));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].encoding, matcher::Encoding::Partial);
     }
 
     #[test]
