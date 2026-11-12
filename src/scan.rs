@@ -132,7 +132,7 @@ fn walk<'a>(
     }
 }
 
-fn excerpt(text: &str) -> String {
+pub(crate) fn excerpt(text: &str) -> String {
     let redacted = matcher::redact(text);
     match redacted.char_indices().nth(EXCERPT_CHARS) {
         Some((cut, _)) => format!("{}…", &redacted[..cut]),
