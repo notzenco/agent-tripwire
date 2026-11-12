@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::matcher::Encoding;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Env,
@@ -23,6 +23,7 @@ pub enum Kind {
     Npm,
     Ssh,
     /// A file planted alongside tokens that holds none, such as `.aws/config`.
+    #[value(skip)]
     Support,
 }
 
@@ -178,6 +179,9 @@ impl Alert {
         ];
         if let Some(id) = &self.token_id {
             parts.push(format!("token {id}"));
+        }
+        if let Some(plant) = &self.plant_id {
+            parts.push(format!("plant {plant}"));
         }
         if let Some(file) = &self.file {
             let field = self
