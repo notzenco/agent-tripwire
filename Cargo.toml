@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 anyhow = "1.0.104"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.11"
 getrandom = "0.4.3"
 libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }
