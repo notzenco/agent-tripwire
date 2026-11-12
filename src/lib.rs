@@ -7,3 +7,4 @@ pub mod plant;
 pub mod scan;
 pub mod state;
 pub mod token;
+pub mod watch;

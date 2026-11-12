@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -10,6 +11,7 @@ use agent_tripwire::plant::{self, PlantOutcome, PlantRequest, Profile};
 use agent_tripwire::scan;
 use agent_tripwire::state::{Kind, Registry, State, real_home};
 use agent_tripwire::token::random_string;
+use agent_tripwire::watch::{Backend, Watcher};
 
 /// Honeytoken credentials that alert when an AI coding agent reads, sends out
 /// or uses them.
@@ -69,6 +71,18 @@ enum Cmd {
         block: bool,
         #[command(subcommand)]
         command: Option<HookCmd>,
+    },
+    /// Watch planted files (and optionally transcripts) and raise alerts.
+    Watch {
+        /// Also tail `.jsonl` transcripts under this directory.
+        #[arg(long = "transcripts", value_name = "DIR")]
+        transcripts: Vec<PathBuf>,
+        /// Send a desktop notification for each alert.
+        #[arg(long)]
+        notify: bool,
+        /// Poll interval in milliseconds.
+        #[arg(long, default_value_t = 500, value_name = "MS")]
+        interval: u64,
     },
     /// Show the alert log.
     Alerts {
@@ -148,6 +162,11 @@ fn run(command: Cmd) -> Result<ExitCode> {
             block,
             command: None,
         } => Ok(run_hook(block)),
+        Cmd::Watch {
+            transcripts,
+            notify,
+            interval,
+        } => watch(transcripts, notify, interval),
         Cmd::Alerts { json, since } => alerts(json, since),
     }
 }
@@ -329,6 +348,61 @@ fn run_hook(block: bool) -> ExitCode {
             ExitCode::from(2)
         }
         None => ExitCode::SUCCESS,
+    }
+}
+
+fn watch(transcripts: Vec<PathBuf>, notify: bool, interval: u64) -> Result<ExitCode> {
+    let state = State::locate()?;
+    let mut watcher = Watcher::new(State::at(state.dir()), transcripts.clone())?;
+    let backend = match watcher.backend() {
+        Backend::Inotify => "inotify",
+        Backend::Atime => "access-time polling",
+    };
+    eprintln!(
+        "Watching {} planted file(s) with {backend}{}. Ctrl-C to stop.",
+        watcher.file_count(),
+        if transcripts.is_empty() {
+            String::new()
+        } else {
+            format!(" and {} transcript dir(s)", transcripts.len())
+        }
+    );
+    loop {
+        for alert in watcher.poll() {
+            if let Err(e) = state.append_alert(&alert) {
+                eprintln!("tripwire watch: {e:#}");
+            }
+            let line = alert.summary();
+            println!("{line}");
+            if notify {
+                desktop_notify(&line);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(interval));
+    }
+}
+
+/// Best effort; a missing notifier is not an error.
+fn desktop_notify(message: &str) {
+    let result = if cfg!(target_os = "macos") {
+        let quoted = message.replace('\\', "\\\\").replace('"', "\\\"");
+        Command::new("osascript")
+            .arg("-e")
+            .arg(format!(
+                "display notification \"{quoted}\" with title \"agent-tripwire\""
+            ))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    } else {
+        Command::new("notify-send")
+            .args(["agent-tripwire", message])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    };
+    if let Ok(mut child) = result {
+        std::thread::spawn(move || child.wait());
     }
 }
 
